@@ -61,7 +61,7 @@ html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
     box-shadow: 0 1px 6px rgba(0,0,0,.06);
     height: 100%;
 }
-.metric-card .val  { font-size: 2.2rem; font-weight: 800; line-height: 1; margin-bottom: 4px; }
+.metric-card .val  { font-size: 1.6rem; font-weight: 800; line-height: 1.1; margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .metric-card .lbl  { font-size: .78rem; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: #64748b; }
 .metric-card .sub  { font-size: .8rem; color: #94a3b8; margin-top: 2px; }
 .card-ok    { border-color: #10b981; } .card-ok .val    { color: #059669; }
@@ -636,16 +636,22 @@ if processar:
     n_diverg    = sum(1 for r in resultados if r["status"] == "divergente")
     n_multa     = sum(1 for r in resultados if r["tem_multa"])
     total_rec   = sum(r["total"] for r in resultados)
-    total_prob  = sum(r["total"] for r in resultados if r["status"] != "ok")
+
+    # Valor total da divergência: diferença absoluta entre principal e declarado
+    total_diverg = round(sum(
+        abs(r["principal"] - (r["val_declarado"] or 0))
+        for r in resultados
+        if r["status"] == "divergente" and r["val_declarado"] is not None
+    ), 2)
 
     c1,c2,c3,c4,c5,c6 = st.columns(6, gap="small")
     cards = [
-        (c1, n_ok,       "Declarados OK",       f"de {len(resultados)} DARFs", "card-ok"),
-        (c2, n_sem_mov,  "Sem Movimento",        "na DCTFWeb",                  "card-erro"),
-        (c3, n_sem_dctf, "DCTFWeb ausente",      "período não carregado",       "card-info"),
-        (c4, n_diverg,   "Valor divergente",     "principal DARF ≠ declarado",  "card-alert"),
-        (c5, n_multa,    "Com multa/juros",       "recolhidos em atraso",        "card-warn"),
-        (c6, fmt_brl(total_rec), "Total recolhido", f"problema: {fmt_brl(total_prob)}", "card-info"),
+        (c1, n_ok,                "Declarados OK",          f"de {len(resultados)} grupos",    "card-ok"),
+        (c2, n_sem_mov,           "Sem Movimento",           "na DCTFWeb",                      "card-erro"),
+        (c3, n_sem_dctf,          "DCTFWeb ausente",         "período não carregado",            "card-info"),
+        (c4, fmt_brl(total_diverg), "Divergência DARF × DCTFWeb", f"{n_diverg} grupo(s) divergente(s)", "card-alert"),
+        (c5, n_multa,             "Com multa/juros",         "recolhidos em atraso",            "card-warn"),
+        (c6, fmt_brl(total_rec),  "Total recolhido",         f"{len(resultados)} grupos de DARFs", "card-info"),
     ]
     for col, val, lbl, sub, cls in cards:
         col.markdown(card_metric(val, lbl, sub, cls), unsafe_allow_html=True)
