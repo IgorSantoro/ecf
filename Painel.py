@@ -156,6 +156,11 @@ div.stDownloadButton > button {
     border-radius: 10px; padding: 14px 18px;
     color: #92400e; font-size: .85rem;
 }
+
+/* Oculta lista nativa de arquivos do file_uploader */
+[data-testid="stFileUploaderFileData"] {
+    display: none !important;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -304,17 +309,12 @@ def extrair_dctfweb(pdf_bytes: bytes) -> dict:
     )
 
     if d["formato"] == "Recibo de Entrega":
-        # Extrai o bloco da tabela de tributos
         bloco_m = re.search(
             r"Totalização dos tributos apurados no período(.+?)O presente Recibo",
             texto, re.DOTALL
         )
         bloco = bloco_m.group(1) if bloco_m else texto
 
-        # Parser linha a linha — cada tributo pode ter:
-        #   "IRPJ 16,34 16,34"         → com valores (débito e saldo)
-        #   "COFINS Sem Movimento"      → sem movimento explícito
-        #   "CSLL"                      → linha só com o nome = sem movimento implícito
         for trib in TRIBUTOS_RECIBO:
             linha_m = re.search(re.escape(trib) + r"[^\n]*", bloco)
             if not linha_m:
@@ -323,15 +323,12 @@ def extrair_dctfweb(pdf_bytes: bytes) -> dict:
             resto = linha[len(trib):].strip()
 
             if not resto:
-                # Só o nome do tributo na linha → sem movimento implícito
                 d["tributos"][trib] = {"debito": 0.0, "saldo": 0.0, "sem_movimento": True}
 
             elif "Sem Movimento" in resto:
-                # Explicitamente marcado como sem movimento
                 d["tributos"][trib] = {"debito": 0.0, "saldo": 0.0, "sem_movimento": True}
 
             else:
-                # Extrai valores numéricos do restante da linha
                 nums = []
                 for v in re.findall(r"[\d]+(?:[.,]\d+)*", resto):
                     try:
@@ -368,13 +365,40 @@ def cruzar(darfs: list[dict], dctfwebs: list[dict]) -> list[dict]:
     idx = {chave(d.get("competencia_dt")): d for d in dctfwebs if d.get("competencia_dt")}
     disponiveis = ", ".join(sorted(idx.keys()))
 
-    resultados = []
+    # ── Agrupa DARFs complementares por (competência + tributo) ──────────────
+    # Chave: (competencia_str, tributo)
+    # Valor: lista de DARFs do mesmo grupo
+    grupos: dict[tuple, list[dict]] = {}
     for darf in darfs:
-        pa  = darf.get("periodo_apuracao")
-        ck  = chave(pa)
-        periodo_fmt = pa.strftime("%d/%m/%Y") if pa else "N/D"
-        dctf   = idx.get(ck)
+        pa      = darf.get("periodo_apuracao")
+        ck      = chave(pa)
         tributo = darf.get("tributo") or "N/D"
+        grupos.setdefault((ck, tributo), []).append(darf)
+
+    resultados = []
+    for (ck, tributo), grupo in grupos.items():
+        # Usa o primeiro DARF como referência para os campos de identificação
+        darf_ref = grupo[0]
+        pa       = darf_ref.get("periodo_apuracao")
+        periodo_fmt = pa.strftime("%d/%m/%Y") if pa else "N/D"
+
+        # Soma os valores de todos os DARFs do grupo
+        principal_total = round(sum(d["principal"] for d in grupo), 2)
+        multa_total     = round(sum(d["multa"]     for d in grupo), 2)
+        juros_total     = round(sum(d["juros"]     for d in grupo), 2)
+        total_total     = round(sum(d["total"]      for d in grupo), 2)
+        tem_multa       = multa_total > 0 or juros_total > 0
+
+        # Números de documento: lista todos separados por vírgula se houver mais de um
+        numeros_doc = ", ".join(
+            d["numero_documento"] for d in grupo if d.get("numero_documento")
+        ) or "N/D"
+
+        # Data de arrecadação: a mais recente do grupo
+        datas_arr = [d["data_arrecadacao"] for d in grupo if d.get("data_arrecadacao")]
+        data_arr_fmt = max(datas_arr).strftime("%d/%m/%Y") if datas_arr else "N/D"
+
+        dctf = idx.get(ck)
 
         if dctf is None:
             status = "sem_dctf"
@@ -392,26 +416,32 @@ def cruzar(darfs: list[dict], dctfwebs: list[dict]) -> list[dict]:
                 val_declarado = 0.0
             else:
                 val_declarado = info.get("debito", 0.0)
-                diff = round(darf["principal"] - val_declarado, 2)  # ← era darf["total"]
+                # Compara a SOMA dos principais com o valor declarado na DCTFWeb
+                diff = round(principal_total - val_declarado, 2)
+                n    = len(grupo)
+                comp_obs = f" (soma de {n} DARFs)" if n > 1 else ""
                 if diff == 0:
-                    status = "ok"; obs = "Valor coincide com a DCTFWeb"
+                    status = "ok"
+                    obs = f"Valor coincide com a DCTFWeb{comp_obs}"
                 elif diff > 0:
-                    status = "divergente"; obs = f"Principal DARF maior que declarado em R$ {diff:.2f}"  # ← mensagem atualizada
+                    status = "divergente"
+                    obs = f"Principal DARF maior que declarado em R$ {diff:.2f}{comp_obs}"
                 else:
-                    status = "divergente"; obs = f"Principal DARF menor que declarado em R$ {abs(diff):.2f}"  # ← mensagem atualizada
+                    status = "divergente"
+                    obs = f"Principal DARF menor que declarado em R$ {abs(diff):.2f}{comp_obs}"
 
         resultados.append(dict(
             competencia_darf = ck or "N/D",
             periodo_apuracao = periodo_fmt,
-            numero_documento = darf.get("numero_documento") or "N/D",
+            numero_documento = numeros_doc,
             tributo          = tributo,
-            codigo           = darf.get("codigo") or "N/D",
-            principal        = darf["principal"],
-            multa            = darf["multa"],
-            juros            = darf["juros"],
-            total            = darf["total"],
-            tem_multa        = darf["multa"] > 0 or darf["juros"] > 0,
-            data_arrecadacao = darf["data_arrecadacao"].strftime("%d/%m/%Y") if darf.get("data_arrecadacao") else "N/D",
+            codigo           = darf_ref.get("codigo") or "N/D",
+            principal        = principal_total,
+            multa            = multa_total,
+            juros            = juros_total,
+            total            = total_total,
+            tem_multa        = tem_multa,
+            data_arrecadacao = data_arr_fmt,
             competencia_dctf = dctf["competencia_str"] if dctf else "—",
             recibo_dctf      = dctf.get("numero_recibo", "—") if dctf else "—",
             val_declarado    = val_declarado,
@@ -613,7 +643,7 @@ if processar:
         (c1, n_ok,       "Declarados OK",       f"de {len(resultados)} DARFs", "card-ok"),
         (c2, n_sem_mov,  "Sem Movimento",        "na DCTFWeb",                  "card-erro"),
         (c3, n_sem_dctf, "DCTFWeb ausente",      "período não carregado",       "card-info"),
-        (c4, n_diverg,   "Valor divergente",     "valor DARF ≠ declarado",      "card-alert"),
+        (c4, n_diverg,   "Valor divergente",     "principal DARF ≠ declarado",  "card-alert"),
         (c5, n_multa,    "Com multa/juros",       "recolhidos em atraso",        "card-warn"),
         (c6, fmt_brl(total_rec), "Total recolhido", f"problema: {fmt_brl(total_prob)}", "card-info"),
     ]
@@ -627,7 +657,6 @@ if processar:
     if problemas:
         st.markdown("### 🔴 Itens que precisam de atenção")
 
-        # Agrupa por status
         grupos = {}
         for r in problemas:
             grupos.setdefault(r["status"], []).append(r)
@@ -675,7 +704,6 @@ if processar:
     # ── Tabela completa ───────────────────────────────────────────────────────
     st.markdown("### 📋 Resultado completo por DARF")
 
-    # Filtro rápido
     filtro_col1, filtro_col2 = st.columns([2, 1])
     with filtro_col1:
         filtro_status = st.multiselect(
@@ -698,7 +726,6 @@ if processar:
     if filtro_comp:
         res_filtrado = [r for r in res_filtrado if r["competencia_darf"] in filtro_comp]
 
-    # Monta tabela HTML
     colunas_html = [
         "Competência", "Período AP.", "Nº DARF", "Tributo",
         "Principal", "Multa", "Juros", "Total DARF",
