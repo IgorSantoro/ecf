@@ -392,13 +392,13 @@ def cruzar(darfs: list[dict], dctfwebs: list[dict]) -> list[dict]:
                 val_declarado = 0.0
             else:
                 val_declarado = info.get("debito", 0.0)
-                diff = round(darf["total"] - val_declarado, 2)
+                diff = round(darf["principal"] - val_declarado, 2)  # ← era darf["total"]
                 if diff == 0:
                     status = "ok"; obs = "Valor coincide com a DCTFWeb"
                 elif diff > 0:
-                    status = "divergente"; obs = f"DARF maior que declarado em R$ {diff:.2f}"
+                    status = "divergente"; obs = f"Principal DARF maior que declarado em R$ {diff:.2f}"  # ← mensagem atualizada
                 else:
-                    status = "divergente"; obs = f"DARF menor que declarado em R$ {abs(diff):.2f}"
+                    status = "divergente"; obs = f"Principal DARF menor que declarado em R$ {abs(diff):.2f}"  # ← mensagem atualizada
 
         resultados.append(dict(
             competencia_darf = ck or "N/D",
